@@ -1,0 +1,209 @@
+{
+    "center": [42.9796, -81.2546],
+    "height": 2200,
+    "width": 2200,
+    "rotation": 0,
+    "paper_height": 51.6,
+    "paper_width": 100,
+    "location": "London ONT",
+    "frame_width_mm": 7,
+    "binding": "globe",
+    "ocean": 0,
+    "logo": 0,
+    "gridx": 5,
+    "gridy": 5,
+    "number_of_holes_for_frame": 6,
+    "number_of_holes_for_globe": 12,
+    "hole_radius_for_libro_in_mm": 1.1,
+    "hole_radius_for_frame_in_mm": 1.1,
+    "hole_radius_for_globe_in_mm": 0.7,
+    "pop_position": "blues",
+    "mapperiaStamp": 0,
+    "number_cline_buffer": 9,
+    "cutcolor_standard": ["15purple", "#A000A0"],
+    "cutcolor_thick": ["16grey", "#808080"],
+    "perfcolor_standard": ["17darkblue", "#7D87B9"],
+    "perfcolor_thick": ["18brown", "#BB7784"],
+    "transformation": 1,
+    "transformations": [
+        {"type": "swirl", "on":1, "swirlCenter": [0, 0], "swirlRadius": 1100, "maxRadiusSwirled": 1100, "maxSwirlAngle": 0.9},
+        {"type": "shift", "on":0,  "shiftPoint1":[2,2], "shiftPoint2":[8,8], "shiftDirection":"12", "shiftStrength":90, "maxDistanceShifted":200},
+        {"type": "lens", "on":1,  "lensCentre": [-250,-560], "lensRadius": 300, "lensStrength": 20 }
+        ],
+    "layers": [
+        {
+            "name": "buildings",
+            "osm_tags": {"building": true,"landuse": ["construction","railway","residential","commercial", "retail", "industrial", "religious"],"man_made":["breakwater"], "amenity":["school","marketplace"]},
+            "type": "footprint",
+            "graphbuffer": 2,
+            "simplify_tolerance": 1,
+            "lcolor": ["02red", "#FF0000"],
+            "pat": 0.000005,
+            "smooth": 5,
+            "c_lines": 0,
+            "emph_buffer": 0.4
+        },
+        {
+            "name": "greens",
+            "osm_tags": {
+                "natural": [
+                    "wood",
+                    "tree_row",
+                    "wetland",
+                    "scrub",
+                    "heath",
+                    "grassland"
+                ],
+                "landuse": [
+                    "farmland",
+                    "grass",
+                    "recreation_ground",
+                    "meadow",
+                    "cemetary",
+                    "village_green",
+                    "forest",
+                    "plant_nursery",
+                    "flowerbed",
+                    "cemetery",
+                    "allotments",
+                    "orchard"
+                ],
+                "leisure": [
+                    "sports_center",
+                    "park",
+                    "garden",
+                    "pitch",
+                    "golf_course",
+                    "stadium",
+                    "playground"
+                ]
+            },
+            "type": "footprint",
+            "graphbuffer": 2,
+            "simplify_tolerance": 3.5,
+            "lcolor": ["03green", "#00E000"],
+            "pat": 0.00001,
+            "smooth": 3,
+            "c_lines": 0,
+            "emph_buffer": 2
+        },
+        {
+            "name": "streets",
+            "osm_tags": {
+                "highway": [
+                    "motorway",
+                    "trunk",
+                    "primary",
+                    "secondary",
+                    "tertiary",
+                    "unclassified",
+                    "residential",
+                    "service",
+                    "trunk_link",
+                    "pedestrian",
+                    "track",
+                    "motorway_link",
+                    "secondary_link",
+                    "living_street"
+                ],
+                "aeroway": ["runway"],
+                "man_made": ["pier"]
+            },
+            "type": "graph",
+            "graphbuffer_mm": 0.3,
+            "simplify_tolerance": 1.5,
+            "lcolor": ["08lightgrey", "#B4B4B4"],
+            "pat": 0.000000000022,
+            "smooth": 1.1,
+            "c_lines": 0,
+            "emph_buffer": 0
+        },
+        {
+            "name": "blues",
+            "osm_tags": {
+                "natural": ["water", "bay", "strait"],
+                "water": ["river", "pond"],
+                "leisure": ["swimming_pool", "marina"],
+                "waterway": [
+                    "river",
+                    "river",
+                    "footpath",
+                    "path",
+                    "cycleway",
+                    "riverbank",
+                    "stream",
+                    "tidal_channel",
+                    "canal",
+                    "pressurized",
+                    "drain",
+                    "ditch",
+                    "fairway",
+                    "fish_pass",
+                    "dock",
+                    "boatyard",
+                    "rapids",
+                    "waterfall"
+                ]
+            },
+            "type": "footprint",
+            "graphbuffer": 0,
+            "simplify_tolerance": 3.1,
+            "lcolor": ["01blue", "#0000FF"],
+            "pat": 0.0000001,
+            "smooth": 3.1,
+            "c_lines": 0,
+            "emph_buffer": 10
+        },
+        {
+            "name": "rail",
+            "osm_tags": {
+                "railway": [
+                    "rail",
+                    "subway",
+                    "tram",
+                    "preserved",
+                    "narrow_gauge",
+                    "monorail",
+                    "minature",
+                    "light_rail",
+                    "funiculare",
+                    "disused",
+                    "construction",
+                    "abondoned"
+                ]
+            },
+            "type": "graph",
+            "graphbuffer_mm": 0.7,
+            "simplify_tolerance": 0.2,
+            "lcolor": ["00black", "#000000"],
+            "pat": 0.000000000022,
+            "smooth": 0.4,
+            "c_lines": 0,
+            "emph_buffer": 0.5
+        },
+        {
+            "name": "front_cover",
+            "osm_tags": {"natural": ["water", "bay", "strait"]},
+            "type": "footprint",
+            "graphbuffer": 3,
+            "simplify_tolerance": 0,
+            "lcolor": ["20darkred", "#D33F6A"],
+            "pat": 0.0002,
+            "smooth": 0,
+            "c_lines": 0,
+            "emph_buffer": 0
+        },
+        {
+            "name": "back_cover",
+            "osm_tags": {"natural": ["water", "bay", "strait"]},
+            "type": "footprint",
+            "graphbuffer": 3,
+            "simplify_tolerance": 0,
+            "lcolor": ["20darkred", "#D33F6A"],
+            "pat": 0.0002,
+            "smooth": 0,
+            "c_lines": 0,
+            "emph_buffer": 0
+        }
+    ]
+}

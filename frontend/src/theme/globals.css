@@ -1,0 +1,89 @@
+/* Global CSS for Mapperia */
+
+html,
+body,
+#__next {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', Arial, sans-serif;
+  background: #f8fafc;
+  color: #222;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+a:hover {
+  color: #1d4ed8;
+}
+
+input,
+button,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 1rem;
+}
+
+/* Map container styles */
+#map-container {
+  width: 100% !important;
+  height: 100% !important;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.maplibregl-map {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  background: #e5e7eb;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+/* Utility classes */
+.bg-white {
+  background: #fff;
+}
+.shadow-2xl {
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+}
+.rounded-lg {
+  border-radius: 0.75rem;
+}
+.border-red-500 {
+  border-color: #ef4444;
+}
+.border-green-500 {
+  border-color: #22c55e;
+}
+.text-blue-700 {
+  color: #1d4ed8;
+}
+.text-blue-600 {
+  color: #2563eb;
+}
+.text-red-600 {
+  color: #dc2626;
+}
+.text-green-600 {
+  color: #16a34a;
+}

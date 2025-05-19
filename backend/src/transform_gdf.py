@@ -4,9 +4,73 @@ from shapely import transform
 
 
 def artisticTransformation(layer, aTs):
+    """Apply artistic transformations to a GeoDataFrame layer.
+
+    This function applies a series of geometric transformations to the geometries in a GeoDataFrame.
+    Supported transformations include swirl, shift, and lens effects.
+
+    Args:
+        layer (GeoDataFrame): Input layer containing geometries to transform.
+        aTs (list): List of transformation dictionaries. Each dict should contain:
+            - type: str - One of "swirl", "shift", or "lens"
+            - on: int - 1 to enable, 0 to disable the transformation
+            For swirl transformations:
+                - swirlCenter: tuple - Center point of the swirl (x,y)
+                - swirlRadius: float - Radius of the swirl circle
+                - maxRadiusSwirled: float - Maximum distance from swirl circle where points are affected
+                - maxSwirlAngle: float - Maximum rotation angle in radians
+            For shift transformations:
+                - shiftPoint1: tuple - First point of the shift line (x,y)
+                - shiftPoint2: tuple - Second point of the shift line (x,y)
+                - shiftStrength: float - Distance to shift points along the line
+                - maxDistanceShifted: float - Maximum distance from shift line where points are affected
+            For lens transformations:
+                - lensCentre: tuple - Center point of the lens effect (x,y)
+                - lensRadius: float - Radius of the lens effect
+                - lensStrength: float - Strength of the lens effect (0-100)
+
+    Returns:
+        GeoDataFrame: Layer with transformed geometries.
+
+    Example:
+        transformations = [
+            {
+                "type": "swirl",
+                "on": 1,
+                "swirlCenter": (0, 0),
+                "swirlRadius": 1110,
+                "maxRadiusSwirled": 1100,
+                "maxSwirlAngle": 0.6
+            }
+        ]
+        transformed_layer = artisticTransformation(layer, transformations)
+    """
+
     def gdf_transform(aT, x):
+        """Apply a single transformation to a set of coordinates.
+
+        Args:
+            aT (dict): Transformation parameters dictionary.
+            x (list): List of [x,y] coordinate pairs to transform.
+
+        Returns:
+            list: Transformed coordinate pairs.
+        """
+
         def swirlTransformation(narray, aT):
-            # print(len(narray))
+            """Apply a swirl effect to coordinates.
+
+            The swirl effect rotates points around a center point, with the rotation angle
+            decreasing as points get further from the swirl circle.
+
+            Args:
+                narray (list): List of [x,y] coordinate pairs.
+                aT (dict): Swirl parameters including center, radius, and angle.
+
+            Returns:
+                list: Swirled coordinate pairs.
+            """
+            # Swirl transformation for coordinates.
             i = 0
             for n in narray:
                 aT["distanceFromSwirlRing"] = abs(
@@ -51,6 +115,19 @@ def artisticTransformation(layer, aTs):
             return narray
 
         def shiftTransformation(narray, aT):
+            """Apply a shift effect along a line.
+
+            Points are shifted along a line defined by two points, with the shift amount
+            decreasing as points get further from the line.
+
+            Args:
+                narray (list): List of [x,y] coordinate pairs.
+                aT (dict): Shift parameters including line points and strength.
+
+            Returns:
+                list: Shifted coordinate pairs.
+            """
+            # Shift transformation for coordinates.
             lineparam_a = (aT["shiftPoint2"][1] - aT["shiftPoint1"][1]) / (
                 aT["shiftPoint2"][0] - aT["shiftPoint1"][1]
             )
@@ -94,6 +171,19 @@ def artisticTransformation(layer, aTs):
             return narray
 
         def lensTransformation(narray, aT):
+            """Apply a lens distortion effect.
+
+            Creates a lens-like distortion where points are pulled toward or pushed away
+            from a center point, with the effect decreasing toward the edge of the lens.
+
+            Args:
+                narray (list): List of [x,y] coordinate pairs.
+                aT (dict): Lens parameters including center, radius, and strength.
+
+            Returns:
+                list: Distorted coordinate pairs.
+            """
+            # Lens transformation for coordinates.
             i = 0
             for n in narray:
                 aT["distanceFromLensCentre"] = sqrt(
@@ -135,14 +225,7 @@ def artisticTransformation(layer, aTs):
                 xinc = b * d / c
                 yinc = a * d / c
                 narray[i] = [n[0] + xinc, n[1] + yinc]
-
-                """
-                if aT["shift"]!=0:
-                    aT["newDistanceFromLensCentre"] = sqrt(pow(narray[i][0] - aT["lensCentre"][0], 2) + pow(narray[i][1] - aT["lensCentre"][1], 2))
-                    print(i, "lenscentre: ", aT["lensCentre"], " lensRadius: ", aT["lensRadius"], " shift: ", aT["shift"], "- olddistance: ", aT["distanceFromLensCentre"]," new distance",aT["newDistanceFromLensCentre"])
-                """
                 i += 1
-                ##"type": "lens", "lensCentre": [100,100], "lensRadius": 50, "lensStrength": 5
             return narray
 
         if aT["on"] == 0:
@@ -159,11 +242,8 @@ def artisticTransformation(layer, aTs):
         return x
 
     for aT in aTs:
-        # layer=layer.explode(ignore_index=True)
         layer["geometry"] = layer["geometry"].segmentize(1)
         layer["geometry"] = transform(layer["geometry"], lambda x: gdf_transform(aT, x))
-        # layer["geometry"]=layer["geometry"].simplify(.5)
-
     return layer
 
 

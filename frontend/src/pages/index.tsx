@@ -292,11 +292,10 @@ const HomePage = () => {
                     <span
                       role="button"
                       tabIndex={0}
-                      className={`inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors border-2 ${
-                        isSettingCenter
+                      className={`inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors border-2 ${isSettingCenter
                           ? 'bg-[var(--nord10)] text-[var(--nord6)] border-[var(--nord9)] shadow-lg'
                           : 'bg-[var(--nord2)] text-[var(--nord6)] border-[var(--nord3)]'
-                      } cursor-pointer`}
+                        } cursor-pointer`}
                       onClick={() => setIsSettingCenter(!isSettingCenter)}
                       onKeyDown={e =>
                         (e.key === 'Enter' || e.key === ' ') && setIsSettingCenter(!isSettingCenter)
@@ -571,11 +570,10 @@ const HomePage = () => {
                       <a
                         href={
                           downloadLinks.png
-                            ? `${
-                                process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
-                              }/api/output/${encodeURIComponent(
-                                downloadLinks.png.split('/').pop() ?? '',
-                              )}`
+                            ? `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
+                            }/api/output/${encodeURIComponent(
+                              downloadLinks.png.split('/').pop() ?? '',
+                            )}`
                             : ''
                         }
                         download
@@ -594,11 +592,10 @@ const HomePage = () => {
                       <a
                         href={
                           downloadLinks.svgPreview
-                            ? `${
-                                process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
-                              }/api/output/${encodeURIComponent(
-                                downloadLinks.svgPreview.split('/').pop() ?? '',
-                              )}`
+                            ? `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
+                            }/api/output/${encodeURIComponent(
+                              downloadLinks.svgPreview.split('/').pop() ?? '',
+                            )}`
                             : ''
                         }
                         download
@@ -617,17 +614,17 @@ const HomePage = () => {
                       <a
                         href={
                           downloadLinks.svgLaser
-                            ? `${
-                                process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
-                              }/api/output/${encodeURIComponent(
-                                downloadLinks.svgLaser.split('/').pop() ?? '',
-                              )}`
+                            ? `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
+                            }/api/output/${encodeURIComponent(
+                              downloadLinks.svgLaser.split('/').pop() ?? '',
+                            )}`
                             : ''
                         }
                         download
                       >
                         <Download className="mr-2 h-4 w-4" />
                         Download SVG (Laser)
+                        <span className="ml-2 px-2 py-0.5 bg-yellow-400 text-black text-xs rounded align-middle">WIP</span>
                       </a>
                     </Button>
                   )}

@@ -2,6 +2,8 @@ import json
 import logging
 import math
 import os
+import re
+import secrets
 import traceback
 import warnings
 from datetime import datetime
@@ -13,20 +15,34 @@ import overpy
 import pandas as pd
 import pyproj
 from pyproj import Transformer
-from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry import (
+    LineString,
+    MultiLineString,
+    MultiPolygon,
+    Point,
+    Polygon,
+    box,
+)
 from shapely.ops import nearest_points, transform
 
 warnings.filterwarnings("ignore")
 
 
-# this function transforms the polygons artistically. ultimately I want to introduce a way to add multiple transformation parameters to create a map, but for now there is only one optional transfornation and that's a swirl which rotates points around a center. the strength of the rotation depends on the distance to a virtual circle around the centre. note: this function transforms points. for lines to be transformed in a non geometric way, they first need to be "densified", i.e. points need to be added with a certain resolution   for them to then represent non straight line
 """def densifyPolygons(row, maxSegmentLength):  # segmentize the geometry in ech row
     return row["geometry"].segmentize(maxSegmentLength)
 """
 
 
 def initialize_crs(card):
-    card["crs"] = createCRS(card["center"])  # create the card CRS
+    """Initialize the coordinate reference system for the card.
+
+    Args:
+        card (dict): Card configuration.
+
+    Returns:
+        tuple: Updated card dict and transformation function.
+    """
+    card["crs"] = createCRS(card["center"])
     card["center_DMS"] = dec2dms(
         card["center"][0], card["center"][1]
     )  # create the card center in degree, minutes, seconds
@@ -49,7 +65,8 @@ def initialize_crs(card):
 
 # this actually creates a custom crs or more specifically a Mercator CRS around the centre of the map
 def createCRS(cardcenter):
-    # create a custom crs based on UTM for the card centre
+    """Create a custom Transverse Mercator CRS centered at the given coordinates."""
+    # Create a custom CRS based on UTM for the card center.
     crs_string = (
         f"+lon_0={cardcenter[1]} +ellps=WGS84 +y_0=0 +no_defs=True +proj=tmerc +x_0=0 "
         f"+units=m  +lat_0={cardcenter[0]} +k=1 +towgs84=0,0,0,0,0,0,0"
@@ -59,6 +76,18 @@ def createCRS(cardcenter):
 
 
 def calculate_card_dimensions(card, ax, fig, cm, cwidthmm):
+    """Calculate card scale and dimensions for plotting.
+
+    Args:
+        card (dict): Card configuration.
+        ax: Matplotlib axis.
+        fig: Matplotlib figure.
+        cm (float): Centimeter to inch conversion.
+        cwidthmm (float): Connector width in mm.
+
+    Returns:
+        tuple: Updated card dict and connector width in map units.
+    """
     """Calculate dimensions and scale for the card."""
     dummyPoly = Polygon(
         [
@@ -83,13 +112,15 @@ def calculate_card_dimensions(card, ax, fig, cm, cwidthmm):
 
     # =max((card['width'] * 10000)/(ax[0, 0].bbox.width /cm),(card['height'] * 10000)/(ax[0, 0].bbox.height /cm))
     card["scaleText"] = ("Scale 1:{:,}".format(round(card["scale"]))).replace(",", " ")
-    cwidth = cwidthmm * card["scale"] / 1000  # connector width is set to mm on paper
+    cwidth = (
+        cwidthmm * card["scale"] / 1000
+    )  # Connector width in map units (mm on paper).
     card["layers"][2]["graphbuffer"] = max(
         card["layers"][2]["graphbuffer_mm"] * card["scale"] / 1000, 2
-    )  # streeets are min graphbuffer_mm or if wider, 1m buffered on map
+    )  # Streets: min graphbuffer_mm or, if wider, 1m buffered on map.
     card["layers"][4]["graphbuffer"] = max(
         card["layers"][4]["graphbuffer_mm"] * card["scale"] / 1000, 2
-    )  # rail  are min graphbuffer_mm or if wider, 1m buffered on map
+    )  # Rail: min graphbuffer_mm or, if wider, 1m buffered on map.
     card["frame_width"] = card["frame_width_mm"] * card["scale"] / 1000
     card["hole_radius_for_libro"] = (
         card["hole_radius_for_libro_in_mm"] * card["scale"] / 1000
@@ -112,6 +143,9 @@ def calculate_card_dimensions(card, ax, fig, cm, cwidthmm):
 
 # this function does not give the correct results with coordinates in NZ - probably a bug with dealing with negative latitude?
 def dec2dms(latitude, longitude):
+    """Convert decimal latitude and longitude to DMS string.
+    Note: This function may not handle negative latitudes correctly for New Zealand coordinates. Needs review for southern hemisphere edge cases.
+    """
     # Convert latitude
     lat_deg = int(latitude)
     lat_min = int((abs(latitude) * 60) % 60)
@@ -130,14 +164,29 @@ def dec2dms(latitude, longitude):
 
 
 def c_linesold(gdf, rects, layer_name, clinesyes, card, cwidth):
+    """Deprecated. Not used."""
     # Function removed as it is not used anywhere in the backend.
     pass
 
 
 def c_lines(gdf, layer_name, clinesyes, card, cwidth):
+    """Generate connector lines between polygons in a layer.
+
+    Args:
+        gdf (GeoDataFrame): Input geometries.
+        layer_name (str): Name of the layer.
+        clinesyes (bool): Whether to generate connector lines.
+        card (dict): Card configuration.
+        cwidth (float): Connector width.
+
+    Returns:
+        tuple: Updated GeoDataFrame and connector lines GeoDataFrame.
+    """
     gdf = gdf.dissolve().explode(index_parts=True)
     all_clines = gpd.GeoDataFrame(columns=["geometry"], crs=card["crs"])
-    if cwidth == 0 or clinesyes == 0:  # return an empty cliones gdf
+    if (
+        cwidth == 0 or clinesyes == 0
+    ):  # Return an empty connector lines GeoDataFrame if not needed.
         return gdf.dissolve().explode(index_parts=True), all_clines
     outer_hull = card["frame"].convex_hull
     ring_area = 0
@@ -148,11 +197,10 @@ def c_lines(gdf, layer_name, clinesyes, card, cwidth):
     total_buffer = buffer_increment
     while (
         ring_area < total_frame_area * 0.98
-    ):  # while the ring area is smaller than the whole area
+    ):  # Continue until the ring area covers most of the frame area.
         ring = outer_hull.difference(
             outer_hull.buffer(total_buffer)
-        )  # go from out to in with increasiong ring area
-        # ring=outer_hull-outer_hull.buffer(total_buffer) # go from out to in with increasiong ring area
+        )  # Shrink the ring area from outside to inside.
         total_buffer += buffer_increment
         ring_area = ring.area[0]
         clines = gpd.GeoDataFrame(columns=["geometry"], crs=card["crs"])
@@ -165,12 +213,12 @@ def c_lines(gdf, layer_name, clinesyes, card, cwidth):
         )
         while (
             subgdf.shape[0] > 1
-        ):  # add connector lines to the dataframe, explode and dissolve until therev is only 1 polygon, i.e. everything is connected
+        ):  # Add connector lines and dissolve until only one polygon remains (all connected).
             for index, row in subgdf.iterrows():
-                point = row.geometry  # take the next "point" (actually any geometry to check against the combined (unary union) of the rest
+                point = row.geometry  # Geometry to check against the rest.
                 multipoint = subgdf.drop(
                     index, axis=0
-                ).geometry.unary_union  # drop the checked geometry from the rest to avoid finding the geometry itself as the nearest neighbor
+                ).geometry.unary_union  # Union of all other geometries.
                 queried_geom, nearest_geom = nearest_points(point, multipoint)
                 # card['frame'].geometry.contains(nearest_geom).any() and card['frame'].geometry.contains(queried_geom).any()
                 if nearest_geom != queried_geom:
@@ -183,7 +231,7 @@ def c_lines(gdf, layer_name, clinesyes, card, cwidth):
 
                     queried_geom = point.intersection(
                         queried_geom.buffer(2 * cwidth)
-                    ).centroid  # move the point inwards to avoid corners in the cline
+                    ).centroid  # Move the point inwards to avoid sharp corners in the connector line.
                     nearest_geom = multipoint.intersection(
                         nearest_geom.buffer(2 * cwidth)
                     ).centroid
@@ -219,6 +267,7 @@ def c_lines(gdf, layer_name, clinesyes, card, cwidth):
 
 
 def c_linesGrid(gdf, grids, layer_name, clinesyes, card, cwidth):
+    """Generate connector lines for polygons within grid cells."""
     all_clines = gpd.GeoDataFrame(columns=["geometry"], crs=card["crs"])
     if cwidth == 0 or clinesyes == 0:  # return an empty cliones gdf
         return gdf.dissolve().explode(index_parts=True), all_clines
@@ -280,11 +329,11 @@ def c_linesGrid(gdf, grids, layer_name, clinesyes, card, cwidth):
 
 
 def get_rectangles(center, card_height, card_width, frame_width, gridx, gridy, card):
-    # TODO: set all the variable accessible to card["key"]
-    rectangles = []  # these are rectangles from out to in
-    grids = []  # this is a grid of rectangles
-    # create the outer frame rectangle
-    # with the card crs centered around the center of the card, the center here is 0, but not for others crs. i should use the projected card center instead.
+    # TODO: Make all variables accessible via card["key"] if needed for future features.
+    rectangles = []  # List of rectangles from outer to inner frame.
+    grids = []  # List of grid rectangles for connector lines.
+    # Create the outer frame rectangle.
+    # Note: With the card CRS centered around the card center, the center here is 0, but not for other CRSs. Consider using the projected card center if needed.
     rectangles.append(
         Polygon(
             [
@@ -295,13 +344,13 @@ def get_rectangles(center, card_height, card_width, frame_width, gridx, gridy, c
             ]
         )
     )
-    # iterate from the outer frame rectangle to the middle with framewidth iterations
+    # Iterate from the outer frame rectangle to the center with frame width steps.
     for i in range(
         1, int(((min(card_height, card_width) + frame_width * 2) / 2) // frame_width)
     ):
         rectangles.append(rectangles[0].buffer(-frame_width * i, join_style=2))
 
-    # secondary grid of rectangles for more clines
+    # Secondary grid of rectangles for additional connector lines.
     x = range(gridx)[1:]
     y = range(gridy)[1:]
     for gridx in x:
@@ -313,10 +362,12 @@ def get_rectangles(center, card_height, card_width, frame_width, gridx, gridy, c
                             center[1] - card_width / 2 + i / gridx * card_width,
                             center[0] - card_height / 2 + ii / gridy * card_height,
                         ).buffer(max(card_width / gridx, card_height / gridy))
-                    )  # this makeds it a square, but it should be a rectangle depending on the gridx and grid y and card dimanesion...
+                    )  # TODO: Refactor to use rectangles instead of squares for grid cells.
 
     match card["binding"]:
-        case "libro":  # building a polygon with a double thick left frame for the binding
+        case (
+            "libro"
+        ):  # Create a polygon with a double-thick left frame for the binding.
             inner_bframe = Polygon(
                 [
                     [
@@ -390,7 +441,7 @@ def get_rectangles(center, card_height, card_width, frame_width, gridx, gridy, c
 
             bframe = rectangles[0] - box(x1, y1, x2, y2) - box(x3, y1, x4, y2)
             bframegdf = gpd.GeoDataFrame(index=[0], geometry=[bframe], crs=card["crs"])
-        case "frame":  # building a polygon with for the binding
+        case "frame":  # Create a polygon for the binding frame.
             inner_bframe = Polygon(
                 [
                     [
@@ -530,7 +581,7 @@ def get_rectangles(center, card_height, card_width, frame_width, gridx, gridy, c
 
             bframegdf = gpd.GeoDataFrame(index=[0], geometry=[bframe], crs=card["crs"])
         ### experimental
-        case _:  # removed 'globe' unused variable
+        case _:  # Default: handle 'globe' or other types.
             sizeOfHoles = card["hole_radius_for_globe"]
             circle = Point(0, 0).buffer(card_width / 2) - Point(0, 0).buffer(
                 card_width / 2 - frame_width
@@ -557,7 +608,7 @@ def simplify(layer, gdfname, card_area):
     if layer["type"] == "graph":
         gdf["geometry"] = gdf["geometry"].buffer(
             layer["graphbuffer"]
-        )  # converting line streets into polygons. should work with a streetwidth dictionary
+        )  # Convert line streets into polygons. TODO: Support street width dictionary for variable widths.
     else:
         gdf["geometry"] = gdf["geometry"].buffer(layer["emph_buffer"], join_style=1)
         gdf["geometry"] = gdf["geometry"].buffer(layer["smooth"], join_style=1)
@@ -566,25 +617,25 @@ def simplify(layer, gdfname, card_area):
         gdf["geometry"] = gdf["geometry"].unary_union
         gdf = gdf.explode(
             index_parts=True
-        )  # not exactly sure what this does but i think it makes multiploygons one geometry and possibly even makes joins all polygons together
+        )  # Explode MultiPolygon geometries into individual Polygon geometries for further processing.
 
         gdf["geometry"] = gdf["geometry"].simplify(
             layer["simplify_tolerance"]
-        )  # straighten the edges
+        )  # Simplify geometry edges.
         gdf["geometry"] = gdf["geometry"].buffer(
             -layer["smooth"], join_style=1
-        )  # reverse the applied buffer
+        )  # Reverse the applied buffer.
 
-        # reduce buffer and epand again to remove small thin pieces
+        # Reduce buffer and expand again to remove small thin pieces
         gdf["geometry"] = gdf["geometry"].buffer(
             -layer["smooth"], join_style=1
-        )  # reverse the applied buffer
+        )  # Reverse the applied buffer.
         gdf["geometry"] = gdf["geometry"].buffer(layer["smooth"], join_style=1)
 
-        gdf["area"] = gdf["geometry"].area  # add a column with area
+        gdf["area"] = gdf["geometry"].area  # Add a column with area.
         gdf = gdf[
             gdf["area"] > (card_area * layer["pat"])
-        ]  # filter out polygons that dont meet the treshold criteria of pat% or total area
+        ]  # Filter out polygons that do not meet the threshold criteria of pat% or total area.
         gdf = gdf.drop("area", axis=1)
     return gdf
 
@@ -754,7 +805,7 @@ def generate_map(lat, lon, width, height, formats, style, location, layers):
             ):
                 ax.set_xlim(minx_env - margin_x, maxx_env + margin_x)
                 ax.set_ylim(miny_env - margin_y, maxy_env + margin_y)
-    # Set aspect to auto to avoid aspect errors
+    # Set aspect to auto to avoid aspect ratio errors in matplotlib.
     ax.set_aspect("auto")
     # --- Set PNG output to 3000x3000 px ---
     try:
@@ -765,7 +816,192 @@ def generate_map(lat, lon, width, height, formats, style, location, layers):
         png_path = os.path.join(output_dir, f"{dt_string}_{location}.png")
         # SVG (Laser Ready)
         if "svg_laser" in formats:
-            fig.savefig(svg_laser_path, format="svg", bbox_inches="tight", pad_inches=0)
+            fig_laser, ax_laser = plt.subplots(
+                figsize=(card["paper_width"] * cm, card["paper_height"] * cm)
+            )
+            ax_laser.axis("off")
+            fig_laser.patch.set_alpha(0.0)
+            ax_laser.set_facecolor((0, 0, 0, 0))
+            plotted_any_laser = False
+            valid_gdfs_laser = []
+
+            # Create patch group for background
+            patch_group = plt.Rectangle((0, 0), 1, 1, fill=False)
+            patch_group.set_gid("patch_1")
+
+            # --- Generate unique clipPath IDs per file (10 hex chars, Jo's style) ---
+            def random_clip_id():
+                return "p" + secrets.token_hex(5)
+
+            num_clip_paths = 8
+            clip_ids = [random_clip_id() for _ in range(num_clip_paths)]
+            clip_rects = [
+                (0, 0),
+                (0, 765.354331),
+                (0, 1530.708661),
+                (0, 2296.062992),
+                (0, 3061.417323),
+                (0, 3826.771654),
+                (0, 4592.125984),
+                (0, 5357.480315),
+            ]
+            clip_size = (765.354331, 765.354331)
+
+            from matplotlib.collections import PatchCollection
+
+            all_patches = []
+            path_counter = 0
+            for idx, layer in enumerate(card["layers"][:max_layers]):
+                edgecolor_hex = color_map.get(layer["lcolor"][0], "#ff0000")
+                if idx < len(all_clipped_gdfs):
+                    gdf_clipped = all_clipped_gdfs[idx]
+                    gdf_clipped = gdf_clipped[
+                        gdf_clipped.is_valid & ~gdf_clipped.is_empty
+                    ]
+                    if gdf_clipped.crs is None:
+                        gdf_clipped.set_crs(card["crs"], inplace=True)
+                    if not gdf_clipped.empty:
+                        for i, feature in enumerate(gdf_clipped.geometry):
+                            # Handle MultiPolygon and MultiLineString
+                            if isinstance(feature, (MultiPolygon, MultiLineString)):
+                                for subgeom in feature.geoms:
+                                    patch = plt.Polygon(
+                                        subgeom.exterior.coords
+                                        if hasattr(subgeom, "exterior")
+                                        else subgeom.coords,
+                                        fill=True,
+                                        facecolor="#ff0000",
+                                        edgecolor=None,
+                                        linewidth=0,
+                                    )
+                                    # Assign clip-path in round-robin fashion
+                                    clip_id = clip_ids[path_counter % len(clip_ids)]
+                                    patch.set_clip_path(
+                                        plt.Rectangle(
+                                            clip_rects[path_counter % len(clip_rects)],
+                                            *clip_size,
+                                        )
+                                    )
+                                    all_patches.append(patch)
+                                    path_counter += 1
+                            else:
+                                patch = plt.Polygon(
+                                    feature.exterior.coords
+                                    if hasattr(feature, "exterior")
+                                    else feature.coords,
+                                    fill=True,
+                                    facecolor="#ff0000",
+                                    edgecolor=None,
+                                    linewidth=0,
+                                )
+                                clip_id = clip_ids[path_counter % len(clip_ids)]
+                                patch.set_clip_path(
+                                    plt.Rectangle(
+                                        clip_rects[path_counter % len(clip_rects)],
+                                        *clip_size,
+                                    )
+                                )
+                                all_patches.append(patch)
+                                path_counter += 1
+                        plotted_any_laser = True
+                        valid_gdfs_laser.append(gdf_clipped)
+                    else:
+                        logging.warning(
+                            f"[SVG Laser] Layer {layer['name']} is empty or invalid after filtering, skipping plot."
+                        )
+
+            if all_patches:
+                pc = PatchCollection(all_patches, match_original=True)
+                pc.set_gid("PatchCollection_1")
+                ax_laser.add_collection(pc)
+            ax_laser.set_gid("axes_1")
+
+            if plotted_any_laser:
+                all_gdf = gpd.GeoDataFrame(
+                    pd.concat(valid_gdfs_laser, ignore_index=True), crs=card["crs"]
+                )
+                if not all_gdf.empty:
+                    minx_env, miny_env, maxx_env, maxy_env = all_gdf.total_bounds
+                    margin_x = (maxx_env - minx_env) * 0.05
+                    margin_y = (maxy_env - miny_env) * 0.05
+                    ax_laser.set_xlim(minx_env - margin_x, maxx_env + margin_x)
+                    ax_laser.set_ylim(miny_env - margin_y, maxy_env + margin_y)
+            else:
+                ax_laser.text(
+                    0.5,
+                    0.5,
+                    "No map data found for this area/layers.",
+                    ha="center",
+                    va="center",
+                    fontsize=18,
+                    color="gray",
+                    transform=ax_laser.transAxes,
+                )
+
+            fig_laser.savefig(
+                svg_laser_path,
+                format="svg",
+                bbox_inches="tight",
+                pad_inches=0,
+            )
+            plt.close(fig_laser)
+
+            # Post-process SVG to ensure proper style and clipPath only
+            with open(svg_laser_path, "r", encoding="utf-8") as f:
+                svg_data = f.read()
+
+            # Remove all <defs> blocks (including multiline)
+            svg_data = re.sub(r"<defs[\s\S]*?</defs>", "", svg_data, flags=re.MULTILINE)
+
+            # Remove old clip-paths
+            svg_data = re.sub(r' clip-path="[^"]*"', "", svg_data)
+
+            # Add style definitions and Jo-style clipPaths (single <defs> block)
+            svg_data = svg_data.replace(
+                "<svg", '<svg xmlns:xlink="http://www.w3.org/1999/xlink"'
+            )
+            style_def = """
+            <defs>
+                <style type="text/css">
+                    * { stroke-linejoin: round; stroke-linecap: butt }
+                    #figure_1 { transform-origin: 0 0; }
+                    .axes_group { transform-origin: 0 0; }
+                    .patch_collection { transform-origin: 0 0; }
+                </style>
+            </defs>
+            """
+            for clip_id, (x, y) in zip(clip_ids, clip_rects):
+                style_def += f'  <clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{clip_size[0]}" height="{clip_size[1]}"/></clipPath>\n'
+            style_def += "</defs>"
+            svg_data = svg_data.replace("</metadata>", f"</metadata>{style_def}")
+
+            # Fix self-closing path tags (convert <path .../> to <path ...></path>)
+            svg_data = re.sub(r"<path([^>]*)/>", r"<path\1></path>", svg_data)
+            # Remove any stray '/ ' before attributes (e.g. '/ clip-path=')
+            svg_data = re.sub(r"/\s+(clip-path|style)=", r" \1=", svg_data)
+
+            # --- ADDED: Add clip-path to each path in PatchCollection_1 ---
+            def add_clip_path(match):
+                path_tag = match.group(0)
+                idx = add_clip_path.counter % len(clip_ids)
+                # Add clip-path before closing tag
+                if "clip-path=" not in path_tag:
+                    path_tag = path_tag.replace(
+                        ">", f' clip-path="url(#{clip_ids[idx]})">'
+                    )
+                add_clip_path.counter += 1
+                return path_tag
+
+            add_clip_path.counter = 0
+            # Only paths inside PatchCollection_1
+            svg_data = re.sub(
+                r'(<g id="PatchCollection_1">[\s\S]*?</g>)',
+                lambda m: re.sub(r"<path [^>]+>", add_clip_path, m.group(0)),
+                svg_data,
+            )
+
+            with open(svg_laser_path, "w", encoding="utf-8") as f:
+                f.write(svg_data)
         # SVG (Preview)
         if "svg_preview" in formats:
             fig_svg, ax_svg = plt.subplots(
@@ -946,74 +1182,6 @@ def generate_map(lat, lon, width, height, formats, style, location, layers):
                 transparent=True,
             )
             plt.close(fig_svg)
-        # SVG (Laser Ready)
-        if "svg_laser" in formats:
-            fig_laser, ax_laser = plt.subplots(
-                figsize=(card["paper_width"] * cm, card["paper_height"] * cm)
-            )
-            ax_laser.axis("off")
-            fig_laser.patch.set_alpha(0.0)
-            ax_laser.set_facecolor((0, 0, 0, 0))
-            plotted_any_laser = False
-            valid_gdfs_laser = []
-            for idx, layer in enumerate(card["layers"][:max_layers]):
-                edgecolor_hex = color_map.get(layer["lcolor"][0], "#000000")
-                if idx < len(all_clipped_gdfs):
-                    gdf_clipped = all_clipped_gdfs[idx]
-                    gdf_clipped = gdf_clipped[
-                        gdf_clipped.is_valid & ~gdf_clipped.is_empty
-                    ]
-                    if gdf_clipped.crs is None:
-                        gdf_clipped.set_crs(card["crs"], inplace=True)
-                    if not gdf_clipped.empty:
-                        gdf_clipped.plot(
-                            ax=ax_laser,
-                            edgecolor=edgecolor_hex,
-                            facecolor="none",
-                            linewidth=0.01,
-                        )
-                        plotted_any_laser = True
-                        valid_gdfs_laser.append(gdf_clipped)
-                    else:
-                        logging.warning(
-                            f"[SVG Laser] Layer {layer['name']} is empty or invalid after filtering, skipping plot."
-                        )
-            if plotted_any_laser:
-                all_gdf = gpd.GeoDataFrame(
-                    pd.concat(valid_gdfs_laser, ignore_index=True), crs=card["crs"]
-                )
-                if not all_gdf.empty:
-                    minx_env, miny_env, maxx_env, maxy_env = all_gdf.total_bounds
-                    margin_x = (maxx_env - minx_env) * 0.05
-                    margin_y = (maxy_env - miny_env) * 0.05
-                    ax_laser.set_xlim(minx_env - margin_x, maxx_env + margin_x)
-                    ax_laser.set_ylim(miny_env - margin_y, maxy_env + margin_y)
-            else:
-                ax_laser.text(
-                    0.5,
-                    0.5,
-                    "No map data found for this area/layers.",
-                    ha="center",
-                    va="center",
-                    fontsize=18,
-                    color="gray",
-                    transform=ax_laser.transAxes,
-                )
-            fig_laser.savefig(
-                svg_laser_path,
-                format="svg",
-                bbox_inches="tight",
-                pad_inches=0,
-            )
-            plt.close(fig_laser)
-            # --- REMOVE CLIP-PATH FROM LASER SVG ---
-            with open(svg_laser_path, "r", encoding="utf-8") as f:
-                svg_data = f.read()
-            import re
-
-            svg_data = re.sub(r' clip-path="[^"]*"', "", svg_data)
-            with open(svg_laser_path, "w", encoding="utf-8") as f:
-                f.write(svg_data)
         if "crs" in card:
             del card["crs"]
         plt.close(fig)
@@ -1033,12 +1201,11 @@ def generate_map(lat, lon, width, height, formats, style, location, layers):
 
 def fetch_osm_layer_overpy(layer, bbox):
     """
-    Dohvati OSM podatke za zadani layer i bbox koristeći overpy i vrati GeoDataFrame.
+    Fetch OSM data for the given layer and bbox using overpy and return a GeoDataFrame.
     bbox: (north, south, east, west)
-    layer: dict s osm_tags i name
+    layer: dict with osm_tags and name
     """
     api = overpy.Overpass()
-    # Turbo-style QL upiti po sloju
     if layer["name"] == "buildings":
         ql = f"""
         (
@@ -1093,7 +1260,6 @@ def fetch_osm_layer_overpy(layer, bbox):
         out body;
         """
     else:
-        # fallback: stari način
         ql_parts = []
         for key, value in layer["osm_tags"].items():
             if value is True:
@@ -1123,13 +1289,11 @@ def fetch_osm_layer_overpy(layer, bbox):
     except Exception as e:
         print(f"Overpy error for layer {layer['name']}: {e}")
         return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
-    # Log broj ways i tipove geometrije
     print(
         f"[Overpy] {layer['name']}: {len(result.ways)} ways, {len(result.relations)} relations"
     )
     geom_types = {}
     records = []
-    # Ways: Polygon/LineString
     for way in result.ways:
         coords = [(float(node.lon), float(node.lat)) for node in way.nodes]
         if len(coords) < 2:
@@ -1142,11 +1306,9 @@ def fetch_osm_layer_overpy(layer, bbox):
             geom_types["LineString"] = geom_types.get("LineString", 0) + 1
         else:
             continue
-        # Spremi OSM tagove u properties
         rec = {"geometry": geom}
         rec.update(way.tags)
         records.append(rec)
-    # Relations: MultiPolygon
     from shapely.geometry import MultiPolygon
 
     for rel in result.relations:
@@ -1169,5 +1331,7 @@ def fetch_osm_layer_overpy(layer, bbox):
             geom_types["MultiPolygon"] = geom_types.get("MultiPolygon", 0) + 1
     print(f"[Overpy] {layer['name']}: geom types {geom_types}")
     logging.info(f"[Overpy] {layer['name']}: geom types {geom_types}")
+    if not records:
+        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
     gdf = gpd.GeoDataFrame(records, crs="EPSG:4326")
     return gdf

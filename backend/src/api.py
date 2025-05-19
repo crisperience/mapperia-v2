@@ -23,6 +23,14 @@ class GenerateMapRequest(BaseModel):
 
 @app.post("/api/generate-map")
 async def generate_map_endpoint(payload: GenerateMapRequest):
+    """Generate a map based on the provided parameters.
+
+    Args:
+        payload (GenerateMapRequest): Map generation parameters.
+
+    Returns:
+        JSONResponse: URLs to generated files or error message.
+    """
     try:
         result = generate_map(
             lat=payload.lat,
@@ -44,6 +52,14 @@ async def generate_map_endpoint(payload: GenerateMapRequest):
 
 @app.get("/api/output/{filename}")
 def get_output_file(filename: str):
+    """Serve generated map files for download.
+
+    Args:
+        filename (str): Name of the file to serve.
+
+    Returns:
+        FileResponse: The requested file or 404 if not found.
+    """
     output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../output"))
     file_path = os.path.join(output_dir, filename)
     if not os.path.isfile(file_path):

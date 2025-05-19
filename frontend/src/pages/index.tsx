@@ -293,8 +293,8 @@ const HomePage = () => {
                       role="button"
                       tabIndex={0}
                       className={`inline-flex items-center justify-center w-9 h-9 rounded-full transition-colors border-2 ${isSettingCenter
-                          ? 'bg-[var(--nord10)] text-[var(--nord6)] border-[var(--nord9)] shadow-lg'
-                          : 'bg-[var(--nord2)] text-[var(--nord6)] border-[var(--nord3)]'
+                        ? 'bg-[var(--nord10)] text-[var(--nord6)] border-[var(--nord9)] shadow-lg'
+                        : 'bg-[var(--nord2)] text-[var(--nord6)] border-[var(--nord3)]'
                         } cursor-pointer`}
                       onClick={() => setIsSettingCenter(!isSettingCenter)}
                       onKeyDown={e =>

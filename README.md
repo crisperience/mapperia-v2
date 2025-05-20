@@ -1,6 +1,6 @@
 # Mapperia Map Generator
 
-Generate crisp, laser-ready SVG and PNG maps from OpenStreetMap data. Choose layers (buildings, streets, greens, water, railways) and export for preview or laser cutting.
+Generate crisp, laser-ready SVG and preview PNG maps from OpenStreetMap data. Choose layers (buildings, streets, greens, water, railways) and export for preview or laser cutting.
 
 ## Tech Stack
 
@@ -11,7 +11,6 @@ Generate crisp, laser-ready SVG and PNG maps from OpenStreetMap data. Choose lay
 
 - Exports: **SVG (laser-ready, thin outlines), PNG (adaptive resolution)**
 - Adaptive scaling for all map sizes
-- No SVG preview (only laser SVG and PNG)
 
 ## Usage
 
@@ -32,7 +31,3 @@ cd frontend
 npm install
 npm run dev
 ```
-
----
-
-SVGs are always precise, with 0.1 unit outlines for laser cutting. PNG previews are crisp and adapt to map size.

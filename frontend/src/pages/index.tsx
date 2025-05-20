@@ -252,7 +252,7 @@ const HomePage = () => {
           {/* Logo */}
           <div className="flex justify-center items-center mb-4">
             <Image
-              src="/logo.webp"
+              src="/logo.svg"
               alt="Mapperia Logo"
               width={240}
               height={72}

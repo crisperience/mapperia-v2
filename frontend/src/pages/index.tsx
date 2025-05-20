@@ -16,7 +16,7 @@ const inter = Inter({ subsets: ['latin'], variable: '--font-inter' })
 const MapView = dynamic(() => import('@/map/MapView'), { ssr: false })
 
 // Types
-type FormatKey = 'png' | 'svg_preview' | 'svg_laser'
+type FormatKey = 'png' | 'svg_laser'
 type Layer = { name: string; colorKey: string; color: string }
 type LayersApiResponse = { layers: Layer[] }
 type GenerateMapResponse = { job_id: string }
@@ -61,7 +61,6 @@ const HomePage = () => {
   const [height, setHeight] = useState('0')
   const [formats, setFormats] = useState<Record<FormatKey, boolean>>({
     png: false,
-    svg_preview: false,
     svg_laser: false,
   })
   const [loading, setLoading] = useState(false)
@@ -71,7 +70,6 @@ const HomePage = () => {
   const [layerConfig, setLayerConfig] = useState<Record<string, boolean>>({})
   const [downloadLinks, setDownloadLinks] = useState<{
     png?: string
-    svgPreview?: string
     svgLaser?: string
   }>({})
   const [boundaryPolygon, setBoundaryPolygon] = useState<Feature | FeatureCollection | null>(null)
@@ -185,7 +183,6 @@ const HomePage = () => {
       const data = await res.json()
       const newDownloadLinks = {
         png: data.pngUrl ? data.pngUrl : undefined,
-        svgPreview: data.svgPreviewUrl ? data.svgPreviewUrl : undefined,
         svgLaser: data.svgLaserUrl ? data.svgLaserUrl : undefined,
       }
       setDownloadLinks(newDownloadLinks)
@@ -485,23 +482,6 @@ const HomePage = () => {
                   </span>
                 </label>
                 <label
-                  htmlFor="format-svg-preview"
-                  className="inline-flex items-center gap-2 cursor-pointer select-none"
-                >
-                  <input
-                    id="format-svg-preview"
-                    type="checkbox"
-                    checked={formats.svg_preview}
-                    onChange={e => setFormats(f => ({ ...f, svg_preview: e.target.checked }))}
-                  />
-                  <span className="text-[16px] text-[var(--nord6)]">
-                    SVG{' '}
-                    <span className="text-[var(--nord4)] text-sm ml-1">
-                      (preview, vector, colored)
-                    </span>
-                  </span>
-                </label>
-                <label
                   htmlFor="format-svg-laser"
                   className="inline-flex items-center gap-2 cursor-pointer select-none"
                 >
@@ -583,28 +563,6 @@ const HomePage = () => {
                       </a>
                     </Button>
                   )}
-                  {downloadLinks.svgPreview && (
-                    <Button
-                      asChild
-                      className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-[0.25rem] px-3 py-2 text-sm"
-                      variant="default"
-                    >
-                      <a
-                        href={
-                          downloadLinks.svgPreview
-                            ? `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
-                            }/api/output/${encodeURIComponent(
-                              downloadLinks.svgPreview.split('/').pop() ?? '',
-                            )}`
-                            : ''
-                        }
-                        download
-                      >
-                        <Download className="mr-2 h-4 w-4" />
-                        Download SVG (Preview)
-                      </a>
-                    </Button>
-                  )}
                   {downloadLinks.svgLaser && (
                     <Button
                       asChild
@@ -623,8 +581,7 @@ const HomePage = () => {
                         download
                       >
                         <Download className="mr-2 h-4 w-4" />
-                        Download SVG (Laser)
-                        <span className="ml-2 px-2 py-0.5 bg-yellow-400 text-black text-xs rounded align-middle">WIP</span>
+                        Download SVG
                       </a>
                     </Button>
                   )}

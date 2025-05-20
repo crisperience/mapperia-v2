@@ -1,19 +1,17 @@
-import json
 import logging
-import math
 import os
-import re
-import secrets
 import traceback
 import warnings
-from datetime import datetime
 from math import cos, sin
 
+import cairosvg
 import geopandas as gpd
-import matplotlib.pyplot as plt
 import overpy
 import pandas as pd
 import pyproj
+import svgwrite
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pyproj import Transformer
 from shapely.geometry import (
     LineString,
@@ -26,6 +24,9 @@ from shapely.geometry import (
 from shapely.ops import nearest_points, transform
 
 warnings.filterwarnings("ignore")
+
+# Ensure output directory exists
+os.makedirs("output", exist_ok=True)
 
 
 """def densifyPolygons(row, maxSegmentLength):  # segmentize the geometry in ech row
@@ -602,13 +603,21 @@ def get_rectangles(center, card_height, card_width, frame_width, gridx, gridy, c
     return inner_bframe, rectangles, bframegdf, grids
 
 
-def simplify(layer, gdfname, card_area):
-    # global card_area
-    gdf = layer[gdfname]
+def simplify(layer, gdf, card_area):
+    """Simplify geometries in a layer based on configuration.
+
+    Args:
+        layer (dict): Layer configuration
+        gdf (GeoDataFrame): Input geometries
+        card_area (float): Total card area for size filtering
+
+    Returns:
+        GeoDataFrame: Simplified geometries
+    """
     if layer["type"] == "graph":
         gdf["geometry"] = gdf["geometry"].buffer(
             layer["graphbuffer"]
-        )  # Convert line streets into polygons. TODO: Support street width dictionary for variable widths.
+        )  # Convert line streets into polygons
     else:
         gdf["geometry"] = gdf["geometry"].buffer(layer["emph_buffer"], join_style=1)
         gdf["geometry"] = gdf["geometry"].buffer(layer["smooth"], join_style=1)
@@ -617,600 +626,394 @@ def simplify(layer, gdfname, card_area):
         gdf["geometry"] = gdf["geometry"].unary_union
         gdf = gdf.explode(
             index_parts=True
-        )  # Explode MultiPolygon geometries into individual Polygon geometries for further processing.
+        )  # Explode MultiPolygon geometries into individual Polygon geometries
 
         gdf["geometry"] = gdf["geometry"].simplify(
             layer["simplify_tolerance"]
-        )  # Simplify geometry edges.
+        )  # Simplify geometry edges
         gdf["geometry"] = gdf["geometry"].buffer(
             -layer["smooth"], join_style=1
-        )  # Reverse the applied buffer.
+        )  # Reverse the applied buffer
 
         # Reduce buffer and expand again to remove small thin pieces
         gdf["geometry"] = gdf["geometry"].buffer(
             -layer["smooth"], join_style=1
-        )  # Reverse the applied buffer.
+        )  # Reverse the applied buffer
         gdf["geometry"] = gdf["geometry"].buffer(layer["smooth"], join_style=1)
 
-        gdf["area"] = gdf["geometry"].area  # Add a column with area.
+        gdf["area"] = gdf["geometry"].area  # Add a column with area
         gdf = gdf[
             gdf["area"] > (card_area * layer["pat"])
-        ]  # Filter out polygons that do not meet the threshold criteria of pat% or total area.
+        ]  # Filter out polygons that do not meet the threshold criteria
         gdf = gdf.drop("area", axis=1)
     return gdf
 
 
+def write_svg_laser_output(gdf, output_path, width=1000, height=1000):
+    """Write geometries to SVG file in laser-ready format.
+
+    Args:
+        gdf: GeoDataFrame containing geometries
+        output_path: Path to save SVG file
+        width: SVG width in points (default 1000)
+        height: SVG height in points (default 1000)
+    """
+    # Get bounds of all geometries
+    bounds = gdf.total_bounds
+
+    # Create SVG document with full profile
+    dwg = svgwrite.Drawing(output_path, size=(width, height), profile="full")
+
+    # Add XML declaration and DOCTYPE
+    dwg.attribs["xmlns"] = "http://www.w3.org/2000/svg"
+    dwg.attribs["xmlns:xlink"] = "http://www.w3.org/1999/xlink"
+    dwg.attribs["version"] = "1.1"
+    dwg.attribs["viewBox"] = f"0 0 {width} {height}"
+
+    # Draw each geometry as a path with round linecap and linejoin
+    for geom in gdf.geometry:
+        path_data = geometry_to_svg_path(geom, bounds, width, height)
+        if path_data:
+            dwg.add(
+                dwg.path(
+                    d=path_data,
+                    fill="none",
+                    stroke=layer["color"],
+                    stroke_width=layer.get("stroke_width", 1),
+                    stroke_linecap="round",
+                    stroke_linejoin="round",
+                )
+            )
+
+    # Write SVG file
+    with open(output_path, "w") as f:
+        f.write('<?xml version="1.0" encoding="utf-8" standalone="no"?>\n')
+        f.write(
+            '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
+        )
+        f.write(dwg.tostring())
+
+
+def geometry_to_svg_path(geometry, width=1000, height=1000, bounds=None):
+    """Convert a Shapely geometry to SVG path data.
+
+    Args:
+        geometry: Shapely geometry object
+        width: SVG width in points (default 1000)
+        height: SVG height in points (default 1000)
+        bounds: Bounding box of all geometries (minx, miny, maxx, maxy)
+
+    Returns:
+        str: SVG path data string
+    """
+    if bounds is None:
+        bounds = geometry.bounds
+
+    minx, miny, maxx, maxy = bounds
+    scale_x = width / (maxx - minx)
+    scale_y = height / (maxy - miny)
+
+    def transform_coords(x, y):
+        # Transform coordinates to SVG space
+        svg_x = (x - minx) * scale_x
+        svg_y = height - (y - miny) * scale_y  # Flip Y axis
+        return f"{svg_x:.2f} {svg_y:.2f}"
+
+    if isinstance(geometry, Polygon):
+        paths = []
+        # Only one exterior ring per geometry
+        coords = list(geometry.exterior.coords)
+        path_data = f"M {transform_coords(coords[0][0], coords[0][1])}"
+        for x, y in coords[1:]:
+            path_data += f"\nL {transform_coords(x, y)}"
+        path_data += "\nz"
+        paths.append(path_data)
+        # Each interior ring (hole) as its own path segment
+        for interior in geometry.interiors:
+            coords = list(interior.coords)
+            path_data = f"M {transform_coords(coords[0][0], coords[0][1])}"
+            for x, y in coords[1:]:
+                path_data += f"\nL {transform_coords(x, y)}"
+            path_data += "\nz"
+            paths.append(path_data)
+        return paths
+    elif isinstance(geometry, MultiPolygon):
+        # Only one path per exterior ring of each polygon
+        paths = []
+        for poly in geometry.geoms:
+            coords = list(poly.exterior.coords)
+            path_data = f"M {transform_coords(coords[0][0], coords[0][1])}"
+            for x, y in coords[1:]:
+                path_data += f"\nL {transform_coords(x, y)}"
+            path_data += "\nz"
+            paths.append(path_data)
+            # Each interior ring (hole) as its own path segment
+            for interior in poly.interiors:
+                coords = list(interior.coords)
+                path_data = f"M {transform_coords(coords[0][0], coords[0][1])}"
+                for x, y in coords[1:]:
+                    path_data += f"\nL {transform_coords(x, y)}"
+                path_data += "\nz"
+                paths.append(path_data)
+        return paths
+    elif isinstance(geometry, LineString):
+        coords = list(geometry.coords)
+        path_data = f"M {transform_coords(coords[0][0], coords[0][1])}"
+        for x, y in coords[1:]:
+            path_data += f"\nL {transform_coords(x, y)}"
+        return [path_data]
+    elif isinstance(geometry, MultiLineString):
+        paths = []
+        for line in geometry.geoms:
+            coords = list(line.coords)
+            path_data = f"M {transform_coords(coords[0][0], coords[0][1])}"
+            for x, y in coords[1:]:
+                path_data += f"\nL {transform_coords(x, y)}"
+            paths.append(path_data)
+        return paths
+    return []
+
+
 def generate_map(lat, lon, width, height, formats, style, location, layers):
-    local_path = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(local_path, "../card.json")) as f:
-        card_template = json.load(f)
-    with open(os.path.join(local_path, "../lightburncolor.json")) as f:
-        color_map = json.load(f)
-    output_dir = os.path.abspath(os.path.join(local_path, "../output"))
-    os.makedirs(output_dir, exist_ok=True)
-    dt_string = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    card = card_template.copy()
-    card["center"] = [lat, lon]
-    card["width"] = width
-    card["height"] = height
-    card["location"] = location
-    card["layers"] = [
-        layer_obj
-        for layer_obj in card_template["layers"]
-        if layer_obj["name"] in layers
-    ]
-    cm = 1 / 2.54
-    from pyproj import Transformer
-    from shapely.geometry import Point, box
-    from shapely.ops import transform
+    """Generate a map at the specified location and size.
 
-    def createCRS(cardcenter):
-        crs_string = (
-            f"+lon_0={cardcenter[1]} +ellps=WGS84 +y_0=0 +no_defs=True +proj=tmerc +x_0=0 "
-            f"+units=m  +lat_0={cardcenter[0]} +k=1 +towgs84=0,0,0,0,0,0,0"
-        )
-        import pyproj
-
-        return pyproj.CRS.from_string(crs_string)
-
-    def initialize_crs(card):
-        card["crs"] = createCRS(card["center"])
-        t_crs2WGS84 = Transformer.from_crs(
-            card["crs"], "epsg:4326", always_xy=True
-        ).transform
-        t_WGS842crs = Transformer.from_crs(
-            "epsg:4326", card["crs"], always_xy=True
-        ).transform
-        card["center_projected"] = (
-            transform(t_WGS842crs, Point(card["center"][1], card["center"][0])).y,
-            transform(t_WGS842crs, Point(card["center"][1], card["center"][0])).x,
-        )
-        return card, t_crs2WGS84
-
-    card, t_crs2WGS84 = initialize_crs(card)
-    fig, ax = plt.subplots(
-        figsize=(card["paper_width"] * cm, card["paper_height"] * cm)
-    )
-    ax.axis("off")
-    fig.set_facecolor("None")
-    fig.set_edgecolor("None")
-    fig.set_frameon(True)
-
-    # Calculate bbox as shapely box
-    # 1 deg latitude ≈ 111.32 km; 1 deg longitude ≈ 111.32 * cos(lat) km
-
-    lat_km = 111.32
-    lon_km = 111.32 * math.cos(math.radians(card["center"][0]))
-    half_height_deg = card["height"] / 2 / lat_km
-    half_width_deg = card["width"] / 2 / lon_km
-    bbox = box(
-        card["center"][1] - half_width_deg,
-        card["center"][0] - half_height_deg,
-        card["center"][1] + half_width_deg,
-        card["center"][0] + half_height_deg,
-    )
-    minx, miny, maxx, maxy = bbox.bounds
-    bbox_tuple = (maxy, miny, maxx, minx)  # (north, south, east, west)
-    max_layers = 6
-    plotted_any = False
-    all_clipped_gdfs = []
-    for layer in card["layers"][:max_layers]:
-        logging.info(f"Processing layer: {layer['name']}")
-        logging.info(f"BBOX: {bbox_tuple}")
-        logging.info(f"OSM tags: {layer['osm_tags']}")
-        try:
-            gdf = fetch_osm_layer_overpy(layer, bbox_tuple)
-            if gdf.empty:
-                logging.warning(
-                    f"Layer {layer['name']} is empty for bbox {bbox_tuple} and tags {layer['osm_tags']}"
-                )
-                continue
-            gdf = gdf.to_crs(card["crs"])
-            # Clip layer to bounding box (ensure bbox is in same CRS)
-            bbox_geom = box(minx, miny, maxx, maxy)
-            import pyproj
-            from shapely.ops import transform
-
-            print(f"Layer {layer['name']} features before clip: {len(gdf)}")
-            # Transform bbox_geom to gdf CRS if needed
-            if gdf.crs != "EPSG:4326":
-                project = pyproj.Transformer.from_crs(
-                    "EPSG:4326", gdf.crs, always_xy=True
-                ).transform
-                bbox_geom_proj = transform(project, bbox_geom)
-            else:
-                bbox_geom_proj = bbox_geom
-            gdf_clipped = gdf.clip(bbox_geom_proj)
-            # Ensure CRS is set
-            if gdf_clipped.crs is None or str(gdf_clipped.crs) != str(card["crs"]):
-                gdf_clipped = gdf_clipped.set_crs(card["crs"], allow_override=True)
-            print(f"Layer {layer['name']} features after clip: {len(gdf_clipped)}")
-            all_clipped_gdfs.append(gdf_clipped)
-            # Eksportiraj svaki sloj kao GeoJSON
-            # geojson_path = os.path.join(
-            #     output_dir, f"{dt_string}_{location}_{layer['name']}.geojson"
-            # )
-            # gdf_clipped.to_file(geojson_path, driver="GeoJSON")
-            logging.info(f"Layer {layer['name']} features: {len(gdf)}")
-            color_hex = (
-                layer["lcolor"][1]
-                if len(layer["lcolor"]) > 1
-                else color_map.get(layer["lcolor"][0], "#000000")
-            )
-            edgecolor_hex = color_map.get(layer["lcolor"][0], "#000000")
-            if not gdf_clipped.empty:
-                gdf_clipped.plot(
-                    ax=ax, edgecolor=edgecolor_hex, facecolor="none", linewidth=0.01
-                )
-            else:
-                logging.warning(
-                    f"Layer {layer['name']} is empty after clipping, skipping plot."
-                )
-                continue
-            plotted_any = True
-        except Exception as e:
-            logging.error(f"Error processing layer {layer['name']}: {e}")
-            logging.error(traceback.format_exc())
-    if not plotted_any:
-        ax.text(
-            0.5,
-            0.5,
-            "No map data found for this area/layers.",
-            ha="center",
-            va="center",
-            fontsize=18,
-            color="gray",
-            transform=ax.transAxes,
-        )
-    # --- Fit/crop to envelope of all objects with margin ---
-    if all_clipped_gdfs:
-        all_gdf = gpd.GeoDataFrame(
-            pd.concat(all_clipped_gdfs, ignore_index=True), crs=card["crs"]
-        )
-        if not all_gdf.empty:
-            minx_env, miny_env, maxx_env, maxy_env = all_gdf.total_bounds
-            # Add margin (5%)
-            margin_x = (maxx_env - minx_env) * 0.05
-            margin_y = (maxy_env - miny_env) * 0.05
-            # Check for finite and positive bounds
-            if (
-                all(
-                    map(
-                        lambda v: pd.notnull(v) and abs(v) != float("inf"),
-                        [minx_env, miny_env, maxx_env, maxy_env],
-                    )
-                )
-                and (maxx_env - minx_env) > 0
-                and (maxy_env - miny_env) > 0
-            ):
-                ax.set_xlim(minx_env - margin_x, maxx_env + margin_x)
-                ax.set_ylim(miny_env - margin_y, maxy_env + margin_y)
-    # Set aspect to auto to avoid aspect ratio errors in matplotlib.
-    ax.set_aspect("auto")
-    # --- Set PNG output to 3000x3000 px ---
+    Args:
+        lat (float): Latitude of map center
+        lon (float): Longitude of map center
+        width (float): Width of map in km (will be converted to meters)
+        height (float): Height of map in km (will be converted to meters)
+        formats (list): List of output formats ('png', 'svg_laser')
+        style (str): Map style
+        location (str): Location name
+        layers (list): List of layer names (strings)
+    """
     try:
-        svg_laser_path = os.path.join(output_dir, f"{dt_string}_{location}_laser.svg")
-        svg_preview_path = os.path.join(
-            output_dir, f"{dt_string}_{location}_preview.svg"
+        CANONICAL_LAYERS = [
+            {
+                "name": "buildings",
+                "active": True,
+                "type": "polygon",
+                "lcolor": ["02red", "#FF0000"],
+                "osm_tags": {"building": True},
+            },
+            {
+                "name": "greens",
+                "active": True,
+                "type": "polygon",
+                "lcolor": ["03green", "#00FF00"],
+                "osm_tags": {
+                    "leisure": ["park", "garden", "golf_course", "recreation_ground"],
+                    "landuse": ["forest", "grass"],
+                },
+            },
+            {
+                "name": "streets",
+                "active": True,
+                "type": "graph",
+                "lcolor": ["08lightgrey", "#B4B4B4"],
+                "osm_tags": {"highway": True},
+            },
+            {
+                "name": "blues",
+                "active": True,
+                "type": "polygon",
+                "lcolor": ["01blue", "#0000FF"],
+                "osm_tags": {
+                    "waterway": True,
+                    "natural": "water",
+                    "landuse": "reservoir",
+                    "water": True,
+                },
+            },
+            {
+                "name": "rail",
+                "active": True,
+                "type": "graph",
+                "lcolor": ["09darkgrey", "#808080"],
+                "osm_tags": {"railway": True},
+            },
+            {
+                "name": "front_cover",
+                "active": True,
+                "type": "polygon",
+                "lcolor": ["20darkred", "#D33F6A"],
+                "osm_tags": {},
+            },
+            {
+                "name": "back_cover",
+                "active": True,
+                "type": "polygon",
+                "lcolor": ["20darkred", "#D33F6A"],
+                "osm_tags": {},
+            },
+        ]
+        LAYER_ORDER = [
+            "back_cover",
+            "blues",
+            "greens",
+            "rail",
+            "streets",
+            "buildings",
+            "front_cover",
+        ]
+        # Convert width and height from kilometers to meters
+        width = width * 1000
+        height = height * 1000
+        # Build the canonical layer list, only including requested layers
+        requested_layer_names = set(layers)
+        layers = [
+            layer.copy()
+            for layer in CANONICAL_LAYERS
+            if layer["name"] in requested_layer_names
+        ]
+        card = {
+            "center": [lat, lon],
+            "width": width,
+            "height": height,
+            "layers": layers,
+            "style": style,
+            "location": location,
+            "formats": formats,
+            "frame_width_mm": 5,
+            "hole_radius_for_libro_in_mm": 1.5,
+            "hole_radius_for_globe_in_mm": 1.5,
+            "hole_radius_for_frame_in_mm": 1.5,
+            "number_cline_buffer": 10,
+        }
+        card["layers"] = sorted(
+            card["layers"],
+            key=lambda layer: LAYER_ORDER.index(layer["name"])
+            if layer["name"] in LAYER_ORDER
+            else 999,
         )
-        png_path = os.path.join(output_dir, f"{dt_string}_{location}.png")
-        # SVG (Laser Ready)
+        # Initialize CRS and transformations
+        card, t_crs2WGS84 = initialize_crs(card)
+        # Create frame
+        card["frame"] = gpd.GeoDataFrame(
+            geometry=[box(-width / 2, -height / 2, width / 2, height / 2)],
+            crs=card["crs"],
+        )
+        # Process each layer
+        all_layers_gdf = {}
+        for layer in card["layers"]:
+            if layer["active"]:
+                bbox = card["frame"].to_crs("epsg:4326").total_bounds
+                gdf = fetch_osm_layer_overpy(layer, bbox)
+                if not gdf.empty:
+                    gdf = gdf.to_crs(card["crs"])
+                    gdf = gdf.clip(card["frame"])
+                    all_layers_gdf[layer["name"]] = gdf
+        output_urls = {}
+        # Get card frame bounds for consistent SVG scaling
+        card_frame_bounds = card["frame"].total_bounds
+        # Generate SVG laser ready (outlines only)
         if "svg_laser" in formats:
-            fig_laser, ax_laser = plt.subplots(
-                figsize=(card["paper_width"] * cm, card["paper_height"] * cm)
-            )
-            ax_laser.axis("off")
-            fig_laser.patch.set_alpha(0.0)
-            ax_laser.set_facecolor((0, 0, 0, 0))
-            plotted_any_laser = False
-            valid_gdfs_laser = []
-
-            # Create patch group for background
-            patch_group = plt.Rectangle((0, 0), 1, 1, fill=False)
-            patch_group.set_gid("patch_1")
-
-            # --- Generate unique clipPath IDs per file (10 hex chars, Jo's style) ---
-            def random_clip_id():
-                return "p" + secrets.token_hex(5)
-
-            num_clip_paths = 8
-            clip_ids = [random_clip_id() for _ in range(num_clip_paths)]
-            clip_rects = [
-                (0, 0),
-                (0, 765.354331),
-                (0, 1530.708661),
-                (0, 2296.062992),
-                (0, 3061.417323),
-                (0, 3826.771654),
-                (0, 4592.125984),
-                (0, 5357.480315),
-            ]
-            clip_size = (765.354331, 765.354331)
-
-            from matplotlib.collections import PatchCollection
-
-            all_patches = []
-            path_counter = 0
-            for idx, layer in enumerate(card["layers"][:max_layers]):
-                edgecolor_hex = color_map.get(layer["lcolor"][0], "#ff0000")
-                if idx < len(all_clipped_gdfs):
-                    gdf_clipped = all_clipped_gdfs[idx]
-                    gdf_clipped = gdf_clipped[
-                        gdf_clipped.is_valid & ~gdf_clipped.is_empty
-                    ]
-                    if gdf_clipped.crs is None:
-                        gdf_clipped.set_crs(card["crs"], inplace=True)
-                    if not gdf_clipped.empty:
-                        for i, feature in enumerate(gdf_clipped.geometry):
-                            # Handle MultiPolygon and MultiLineString
-                            if isinstance(feature, (MultiPolygon, MultiLineString)):
-                                for subgeom in feature.geoms:
-                                    patch = plt.Polygon(
-                                        subgeom.exterior.coords
-                                        if hasattr(subgeom, "exterior")
-                                        else subgeom.coords,
-                                        fill=True,
-                                        facecolor="#ff0000",
-                                        edgecolor=None,
-                                        linewidth=0,
-                                    )
-                                    # Assign clip-path in round-robin fashion
-                                    clip_id = clip_ids[path_counter % len(clip_ids)]
-                                    patch.set_clip_path(
-                                        plt.Rectangle(
-                                            clip_rects[path_counter % len(clip_rects)],
-                                            *clip_size,
-                                        )
-                                    )
-                                    all_patches.append(patch)
-                                    path_counter += 1
-                            else:
-                                patch = plt.Polygon(
-                                    feature.exterior.coords
-                                    if hasattr(feature, "exterior")
-                                    else feature.coords,
-                                    fill=True,
-                                    facecolor="#ff0000",
-                                    edgecolor=None,
-                                    linewidth=0,
-                                )
-                                clip_id = clip_ids[path_counter % len(clip_ids)]
-                                patch.set_clip_path(
-                                    plt.Rectangle(
-                                        clip_rects[path_counter % len(clip_rects)],
-                                        *clip_size,
-                                    )
-                                )
-                                all_patches.append(patch)
-                                path_counter += 1
-                        plotted_any_laser = True
-                        valid_gdfs_laser.append(gdf_clipped)
-                    else:
-                        logging.warning(
-                            f"[SVG Laser] Layer {layer['name']} is empty or invalid after filtering, skipping plot."
+            svg_laser_path = f"output/{location}_laser.svg"
+            dwg = svgwrite.Drawing(svg_laser_path, size=(1000, 1000), profile="full")
+            dwg.attribs["xmlns"] = "http://www.w3.org/2000/svg"
+            dwg.attribs["xmlns:xlink"] = "http://www.w3.org/1999/xlink"
+            dwg.attribs["version"] = "1.1"
+            dwg.attribs["viewBox"] = "0 0 1000 1000"
+            for layer in card["layers"]:
+                layer_name = layer["name"]
+                if layer_name in all_layers_gdf:
+                    gdf = all_layers_gdf[layer_name]
+                    layer_group = dwg.g(id=f"layer_{layer_name}")
+                    stroke_width = 0.1  # Fixed thin stroke for laser cutting
+                    for i, (_, row) in enumerate(gdf.iterrows()):
+                        path_datas = geometry_to_svg_path(
+                            row.geometry, 1000, 1000, card_frame_bounds
                         )
-
-            if all_patches:
-                pc = PatchCollection(all_patches, match_original=True)
-                pc.set_gid("PatchCollection_1")
-                ax_laser.add_collection(pc)
-            ax_laser.set_gid("axes_1")
-
-            if plotted_any_laser:
-                all_gdf = gpd.GeoDataFrame(
-                    pd.concat(valid_gdfs_laser, ignore_index=True), crs=card["crs"]
+                        if path_datas:
+                            if not isinstance(path_datas, list):
+                                path_datas = [path_datas]
+                            for j, path_data in enumerate(path_datas):
+                                if path_data:
+                                    path = dwg.path(
+                                        d=path_data,
+                                        stroke=layer["lcolor"][1],
+                                        fill="none",
+                                        stroke_width=stroke_width,
+                                        id=f"{layer_name}_path{i}_{j}",
+                                    )
+                                    layer_group.add(path)
+                    dwg.add(layer_group)
+            with open(svg_laser_path, "w") as f:
+                f.write('<?xml version="1.0" encoding="utf-8" standalone="no"?>\n')
+                f.write(
+                    '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
                 )
-                if not all_gdf.empty:
-                    minx_env, miny_env, maxx_env, maxy_env = all_gdf.total_bounds
-                    margin_x = (maxx_env - minx_env) * 0.05
-                    margin_y = (maxy_env - miny_env) * 0.05
-                    ax_laser.set_xlim(minx_env - margin_x, maxx_env + margin_x)
-                    ax_laser.set_ylim(miny_env - margin_y, maxy_env + margin_y)
-            else:
-                ax_laser.text(
-                    0.5,
-                    0.5,
-                    "No map data found for this area/layers.",
-                    ha="center",
-                    va="center",
-                    fontsize=18,
-                    color="gray",
-                    transform=ax_laser.transAxes,
-                )
-
-            fig_laser.savefig(
-                svg_laser_path,
-                format="svg",
-                bbox_inches="tight",
-                pad_inches=0,
-            )
-            plt.close(fig_laser)
-
-            # Post-process SVG to ensure proper style and clipPath only
-            with open(svg_laser_path, "r", encoding="utf-8") as f:
-                svg_data = f.read()
-
-            # Remove all <defs> blocks (including multiline)
-            svg_data = re.sub(r"<defs[\s\S]*?</defs>", "", svg_data, flags=re.MULTILINE)
-
-            # Remove old clip-paths
-            svg_data = re.sub(r' clip-path="[^"]*"', "", svg_data)
-
-            # Add style definitions and Jo-style clipPaths (single <defs> block)
-            svg_data = svg_data.replace(
-                "<svg", '<svg xmlns:xlink="http://www.w3.org/1999/xlink"'
-            )
-            style_def = """
-            <defs>
-                <style type="text/css">
-                    * { stroke-linejoin: round; stroke-linecap: butt }
-                    #figure_1 { transform-origin: 0 0; }
-                    .axes_group { transform-origin: 0 0; }
-                    .patch_collection { transform-origin: 0 0; }
-                </style>
-            </defs>
-            """
-            for clip_id, (x, y) in zip(clip_ids, clip_rects):
-                style_def += f'  <clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{clip_size[0]}" height="{clip_size[1]}"/></clipPath>\n'
-            style_def += "</defs>"
-            svg_data = svg_data.replace("</metadata>", f"</metadata>{style_def}")
-
-            # Fix self-closing path tags (convert <path .../> to <path ...></path>)
-            svg_data = re.sub(r"<path([^>]*)/>", r"<path\1></path>", svg_data)
-            # Remove any stray '/ ' before attributes (e.g. '/ clip-path=')
-            svg_data = re.sub(r"/\s+(clip-path|style)=", r" \1=", svg_data)
-
-            # --- ADDED: Add clip-path to each path in PatchCollection_1 ---
-            def add_clip_path(match):
-                path_tag = match.group(0)
-                idx = add_clip_path.counter % len(clip_ids)
-                # Add clip-path before closing tag
-                if "clip-path=" not in path_tag:
-                    path_tag = path_tag.replace(
-                        ">", f' clip-path="url(#{clip_ids[idx]})">'
-                    )
-                add_clip_path.counter += 1
-                return path_tag
-
-            add_clip_path.counter = 0
-            # Only paths inside PatchCollection_1
-            svg_data = re.sub(
-                r'(<g id="PatchCollection_1">[\s\S]*?</g>)',
-                lambda m: re.sub(r"<path [^>]+>", add_clip_path, m.group(0)),
-                svg_data,
-            )
-
-            with open(svg_laser_path, "w", encoding="utf-8") as f:
-                f.write(svg_data)
-        # SVG (Preview)
-        if "svg_preview" in formats:
-            fig_svg, ax_svg = plt.subplots(
-                figsize=(card["paper_width"] * cm, card["paper_height"] * cm)
-            )
-            ax_svg.axis("off")
-            fig_svg.patch.set_alpha(0.0)
-            ax_svg.set_facecolor((0, 0, 0, 0))
-            for idx, layer in enumerate(card["layers"][:max_layers]):
-                color_hex = (
-                    layer["lcolor"][1]
-                    if len(layer["lcolor"]) > 1
-                    else color_map.get(layer["lcolor"][0], "#000000")
-                )
-                edgecolor_hex = color_hex
-                if idx < len(all_clipped_gdfs):
-                    gdf_clipped = all_clipped_gdfs[idx]
-                    if not gdf_clipped.empty:
-                        gdf_clipped.plot(
-                            ax=ax_svg,
-                            edgecolor=edgecolor_hex,
-                            facecolor=color_hex,
-                            linewidth=1,
-                        )
-                    else:
-                        logging.warning(
-                            f"[SVG Preview] Layer {layer['name']} is empty after clipping, skipping plot."
-                        )
-                        continue
-            if all_clipped_gdfs:
-                all_gdf = gpd.GeoDataFrame(
-                    pd.concat(all_clipped_gdfs, ignore_index=True), crs=card["crs"]
-                )
-                if not all_gdf.empty:
-                    minx_env, miny_env, maxx_env, maxy_env = all_gdf.total_bounds
-                    margin_x = (maxx_env - minx_env) * 0.05
-                    margin_y = (maxy_env - miny_env) * 0.05
-                    ax_svg.set_xlim(minx_env - margin_x, maxx_env + margin_x)
-                    ax_svg.set_ylim(miny_env - margin_y, maxy_env + margin_y)
-            fig_svg.savefig(
-                svg_preview_path,
-                format="svg",
-                bbox_inches="tight",
-                pad_inches=0,
-                transparent=True,
-            )
-            plt.close(fig_svg)
-        # PNG (Preview)
+                f.write(dwg.tostring())
+            output_urls["svgLaserUrl"] = f"/download/{location}_laser.svg"
+        # Generate PNG preview from SVG laser if requested
         if "png" in formats:
-            fig_png, ax_png = plt.subplots(
-                figsize=(card["paper_width"] * cm, card["paper_height"] * cm)
-            )
-            ax_png.axis("off")
-            fig_png.patch.set_alpha(0.0)
-            ax_png.set_facecolor((0, 0, 0, 0))
-            plotted_any_png = False
-            valid_gdfs_png = []
-            for idx, layer in enumerate(card["layers"][:max_layers]):
-                color_hex = (
-                    layer["lcolor"][1]
-                    if len(layer["lcolor"]) > 1
-                    else color_map.get(layer["lcolor"][0], "#000000")
-                )
-                edgecolor_hex = color_hex
-                if idx < len(all_clipped_gdfs):
-                    gdf_clipped = all_clipped_gdfs[idx]
-                    gdf_clipped = gdf_clipped[
-                        gdf_clipped.is_valid & ~gdf_clipped.is_empty
-                    ]
-                    if gdf_clipped.crs is None:
-                        gdf_clipped.set_crs(card["crs"], inplace=True)
-                    if not gdf_clipped.empty:
-                        gdf_clipped.plot(
-                            ax=ax_png,
-                            edgecolor=edgecolor_hex,
-                            facecolor=color_hex,
-                            linewidth=1,
-                        )
-                        plotted_any_png = True
-                        valid_gdfs_png.append(gdf_clipped)
-                    else:
-                        logging.warning(
-                            f"[PNG Preview] Layer {layer['name']} is empty or invalid after filtering, skipping plot."
-                        )
-            if plotted_any_png:
-                all_gdf = gpd.GeoDataFrame(
-                    pd.concat(valid_gdfs_png, ignore_index=True), crs=card["crs"]
-                )
-                if not all_gdf.empty:
-                    minx_env, miny_env, maxx_env, maxy_env = all_gdf.total_bounds
-                    margin_x = (maxx_env - minx_env) * 0.05
-                    margin_y = (maxy_env - miny_env) * 0.05
-                    ax_png.set_xlim(minx_env - margin_x, maxx_env + margin_x)
-                    ax_png.set_ylim(miny_env - margin_y, maxy_env + margin_y)
+            # Calculate output size in mm (assuming width/height are in meters)
+            width_mm = width
+            height_mm = height
+            # Convert mm to inches
+            width_in = width_mm / 25.4
+            height_in = height_mm / 25.4
+            # 150 DPI for preview
+            dpi = 150
+            # Calculate pixel dimensions at 150 DPI
+            px_width = width_in * dpi
+            px_height = height_in * dpi
+            # Adaptive max dimension based on map size
+            map_km = max(width, height) / 1000
+            if map_km <= 3:
+                max_dim = 3000
+            elif map_km <= 10:
+                max_dim = 4000
+            elif map_km <= 20:
+                max_dim = 5000
             else:
-                ax_png.text(
-                    0.5,
-                    0.5,
-                    "No map data found for this area/layers.",
-                    ha="center",
-                    va="center",
-                    fontsize=18,
-                    color="gray",
-                    transform=ax_png.transAxes,
-                )
-            fig_png.savefig(
-                png_path,
-                format="png",
-                dpi=600,
-                bbox_inches="tight",
-                pad_inches=0,
-                transparent=True,
-            )
-            plt.close(fig_png)
-        # SVG (Preview)
-        if "svg_preview" in formats:
-            fig_svg, ax_svg = plt.subplots(
-                figsize=(card["paper_width"] * cm, card["paper_height"] * cm)
-            )
-            ax_svg.axis("off")
-            fig_svg.patch.set_alpha(0.0)
-            ax_svg.set_facecolor((0, 0, 0, 0))
-            plotted_any_svg = False
-            valid_gdfs_svg = []
-            for idx, layer in enumerate(card["layers"][:max_layers]):
-                color_hex = (
-                    layer["lcolor"][1]
-                    if len(layer["lcolor"]) > 1
-                    else color_map.get(layer["lcolor"][0], "#000000")
-                )
-                edgecolor_hex = color_hex
-                if idx < len(all_clipped_gdfs):
-                    gdf_clipped = all_clipped_gdfs[idx]
-                    gdf_clipped = gdf_clipped[
-                        gdf_clipped.is_valid & ~gdf_clipped.is_empty
-                    ]
-                    if gdf_clipped.crs is None:
-                        gdf_clipped.set_crs(card["crs"], inplace=True)
-                    if not gdf_clipped.empty:
-                        gdf_clipped.plot(
-                            ax=ax_svg,
-                            edgecolor=edgecolor_hex,
-                            facecolor=color_hex,
-                            linewidth=1,
-                        )
-                        plotted_any_svg = True
-                        valid_gdfs_svg.append(gdf_clipped)
-                    else:
-                        logging.warning(
-                            f"[SVG Preview] Layer {layer['name']} is empty or invalid after filtering, skipping plot."
-                        )
-            if plotted_any_svg:
-                all_gdf = gpd.GeoDataFrame(
-                    pd.concat(valid_gdfs_svg, ignore_index=True), crs=card["crs"]
-                )
-                if not all_gdf.empty:
-                    minx_env, miny_env, maxx_env, maxy_env = all_gdf.total_bounds
-                    margin_x = (maxx_env - minx_env) * 0.05
-                    margin_y = (maxy_env - miny_env) * 0.05
-                    ax_svg.set_xlim(minx_env - margin_x, maxx_env + margin_x)
-                    ax_svg.set_ylim(miny_env - margin_y, maxy_env + margin_y)
+                max_dim = 6000
+            if px_width >= px_height:
+                scale = min(1.0, max_dim / px_width)
             else:
-                ax_svg.text(
-                    0.5,
-                    0.5,
-                    "No map data found for this area/layers.",
-                    ha="center",
-                    va="center",
-                    fontsize=18,
-                    color="gray",
-                    transform=ax_svg.transAxes,
-                )
-            fig_svg.savefig(
-                svg_preview_path,
-                format="svg",
-                bbox_inches="tight",
-                pad_inches=0,
-                transparent=True,
+                scale = min(1.0, max_dim / px_height)
+            png_width = int(px_width * scale)
+            png_height = int(px_height * scale)
+            print(
+                f"[PNG Export] width_mm={width_mm}, height_mm={height_mm}, px=({png_width},{png_height}), dpi={dpi}, max_dim={max_dim}"
             )
-            plt.close(fig_svg)
-        if "crs" in card:
-            del card["crs"]
-        plt.close(fig)
+            png_path = f"output/{location}_preview.png"
+            cairosvg.svg2png(
+                url=svg_laser_path,
+                write_to=png_path,
+                output_width=png_width,
+                output_height=png_height,
+                dpi=dpi,
+            )
+            output_urls["pngUrl"] = f"/download/{location}_preview.png"
+        # Debug: Print blues layer bounds and geometry count
+        if "blues" in all_layers_gdf:
+            blues_gdf = all_layers_gdf["blues"]
+            print(f"[DEBUG] Blues layer bounds: {blues_gdf.total_bounds}")
+            print(f"[DEBUG] Blues layer geometry count: {len(blues_gdf)}")
+        return output_urls
+
     except Exception as e:
-        logging.error(f"Error saving output: {e}")
+        logging.error(f"Error generating map: {str(e)}")
         logging.error(traceback.format_exc())
         raise
-    result = {}
-    if "svg_laser" in formats:
-        result["svgLaserUrl"] = f"/api/output/{os.path.basename(svg_laser_path)}"
-    if "svg_preview" in formats:
-        result["svgPreviewUrl"] = f"/api/output/{os.path.basename(svg_preview_path)}"
-    if "png" in formats:
-        result["pngUrl"] = f"/api/output/{os.path.basename(png_path)}"
-    return result
 
 
 def fetch_osm_layer_overpy(layer, bbox):
     """
     Fetch OSM data for the given layer and bbox using overpy and return a GeoDataFrame.
-    bbox: (north, south, east, west)
+    bbox: (minx, miny, maxx, maxy)
     layer: dict with osm_tags and name
     """
     api = overpy.Overpass()
+    # Correct bbox order: minx, miny, maxx, maxy = west, south, east, north
+    west, south, east, north = bbox
+
     if layer["name"] == "buildings":
         ql = f"""
         (
-          way["building"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["building"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
+          way["building"]({south},{west},{north},{east});
+          relation["building"]({south},{west},{north},{east});
         );
         (._;>;);
         out body;
@@ -1218,10 +1021,10 @@ def fetch_osm_layer_overpy(layer, bbox):
     elif layer["name"] == "greens":
         ql = f"""
         (
-          way["leisure"~"park|garden|golf_course|recreation_ground"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["leisure"~"park|garden|golf_course|recreation_ground"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          way["landuse"~"forest|grass"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["landuse"~"forest|grass"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
+          way["leisure"~"park|garden|golf_course|recreation_ground"]({south},{west},{north},{east});
+          relation["leisure"~"park|garden|golf_course|recreation_ground"]({south},{west},{north},{east});
+          way["landuse"~"forest|grass"]({south},{west},{north},{east});
+          relation["landuse"~"forest|grass"]({south},{west},{north},{east});
         );
         (._;>;);
         out body;
@@ -1229,8 +1032,8 @@ def fetch_osm_layer_overpy(layer, bbox):
     elif layer["name"] == "streets":
         ql = f"""
         (
-          way["highway"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["highway"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
+          way["highway"]({south},{west},{north},{east});
+          relation["highway"]({south},{west},{north},{east});
         );
         (._;>;);
         out body;
@@ -1238,14 +1041,14 @@ def fetch_osm_layer_overpy(layer, bbox):
     elif layer["name"] == "blues":
         ql = f"""
         (
-          way["waterway"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["waterway"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          way["natural"="water"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["natural"="water"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          way["landuse"="reservoir"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["landuse"="reservoir"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          way["water"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["water"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
+          way["waterway"]({south},{west},{north},{east});
+          relation["waterway"]({south},{west},{north},{east});
+          way["natural"="water"]({south},{west},{north},{east});
+          relation["natural"="water"]({south},{west},{north},{east});
+          way["landuse"="reservoir"]({south},{west},{north},{east});
+          relation["landuse"="reservoir"]({south},{west},{north},{east});
+          way["water"]({south},{west},{north},{east});
+          relation["water"]({south},{west},{north},{east});
         );
         (._;>;);
         out body;
@@ -1253,8 +1056,8 @@ def fetch_osm_layer_overpy(layer, bbox):
     elif layer["name"] == "rail":
         ql = f"""
         (
-          way["railway"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
-          relation["railway"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});
+          way["railway"]({south},{west},{north},{east});
+          relation["railway"]({south},{west},{north},{east});
         );
         (._;>;);
         out body;
@@ -1264,16 +1067,16 @@ def fetch_osm_layer_overpy(layer, bbox):
         for key, value in layer["osm_tags"].items():
             if value is True:
                 ql_parts.append(
-                    f'way["{key}"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]}); relation["{key}"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});'
+                    f'way["{key}"]({south},{west},{north},{east}); relation["{key}"]({south},{west},{north},{east});'
                 )
             elif isinstance(value, list):
                 for v in value:
                     ql_parts.append(
-                        f'way["{key}"="{v}"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]}); relation["{key}"="{v}"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});'
+                        f'way["{key}"="{v}"]({south},{west},{north},{east}); relation["{key}"="{v}"]({south},{west},{north},{east});'
                     )
             else:
                 ql_parts.append(
-                    f'way["{key}"="{value}"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]}); relation["{key}"="{value}"]({bbox[1]},{bbox[3]},{bbox[0]},{bbox[2]});'
+                    f'way["{key}"="{value}"]({south},{west},{north},{east}); relation["{key}"="{value}"]({south},{west},{north},{east});'
                 )
         ql = f"""
         (
@@ -1335,3 +1138,34 @@ def fetch_osm_layer_overpy(layer, bbox):
         return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
     gdf = gpd.GeoDataFrame(records, crs="EPSG:4326")
     return gdf
+
+
+app = FastAPI()
+
+
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    file_path = f"output/{filename}"
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(
+        file_path, media_type="application/octet-stream", filename=filename
+    )
+
+
+@app.post("/api/generate-map")
+async def generate_map_endpoint(request: dict):
+    try:
+        result = generate_map(
+            lat=request["lat"],
+            lon=request["lon"],
+            width=request["width"],
+            height=request["height"],
+            formats=request["formats"],
+            style=request["style"],
+            location=request["location"],
+            layers=request["layers"],
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

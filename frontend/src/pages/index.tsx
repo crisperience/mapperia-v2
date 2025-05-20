@@ -244,7 +244,6 @@ const HomePage = () => {
     >
       <Head>
         <title>Mapperia - Map Generator</title>
-        <link rel="icon" href="/favicon.ico" />
       </Head>
       {/* Sidebar */}
       <aside className="h-full w-96 max-w-full bg-[var(--nord1)] text-[var(--nord6)] shadow-2xl border-r border-[var(--nord2)] z-10 flex flex-col">
